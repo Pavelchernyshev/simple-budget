@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Budget</title>
+
+  <!-- Firebase SDK v10 compat -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+  <!-- React 18 + Babel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <style>
+    :root {
+      --bg:     #fbfbfb;
+      --bg2:    #eae8ec;
+      --card:   #ffffff;
+      --border: #eae8ec;
+      --accent: #dcf365;
+      --txt:    #2c2c2e;
+      --txt2:   #8d8d8f;
+      --txt3:   #cbcdd5;
+      --inp-bg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:     #2c2c2e;
+        --bg2:    #3a3a3c;
+        --card:   #3a3a3c;
+        --border: #48484a;
+        --txt:    #fbfbfb;
+        --txt2:   #cbcdd5;
+        --txt3:   #8d8d8f;
+        --inp-bg: #48484a;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--txt); font-size: 14px; line-height: 1.5;
+    }
+    button { font-family: inherit; }
+    input, select {
+      font-family: inherit; background: var(--inp-bg); color: var(--txt);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; font-size: 14px; width: 100%;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(220,243,101,.18); }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-thumb { background: var(--txt3); border-radius: 3px; }
+  </style>
+
+  <!-- ★ PASTE YOUR FIREBASE CONFIG HERE ★ -->
+  <script>
+    const firebaseConfig = {
+      apiKey:            "REPLACE_WITH_YOUR_API_KEY",
+      authDomain:        "REPLACE_WITH_YOUR_PROJECT_ID.firebaseapp.com",
+      projectId:         "REPLACE_WITH_YOUR_PROJECT_ID",
+      storageBucket:     "REPLACE_WITH_YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+      appId:             "REPLACE_WITH_YOUR_APP_ID"
+    };
+    firebase.initializeApp(firebaseConfig);
+  </script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+// ─── Config ──────────────────────────────────────────────
+const ALLOWED_EMAIL = 'paul.czen@gmail.com';
+const auth = firebase.auth();
+const db   = firebase.firestore();
+
+// ─── Categories ──────────────────────────────────────────
+const CATS = [
+  { id: 'food',          label: 'Food & Dining',  emoji: '🍕', color: '#f97316' },
+  { id: 'groceries',     label: 'Groceries',       emoji: '🛒', color: '#84cc16' },
+  { id: 'transport',     label: 'Transport',        emoji: '🚌', color: '#3b82f6' },
+  { id: 'entertainment', label: 'Entertainment',    emoji: '🎬', color: '#8b5cf6' },
+  { id: 'travel',        label: 'Travel',           emoji: '✈️', color: '#06b6d4' },
+  { id: 'home',          label: 'Home',             emoji: '🏠', color: '#10b981' },
+  { id: 'health',        label: 'Health',           emoji: '💊', color: '#ef4444' },
+  { id: 'shopping',      label: 'Shopping',         emoji: '🛍️', color: '#ec4899' },
+  { id: 'tech',          label: 'Tech',             emoji: '💻', color: '#6366f1' },
+  { id: 'other',         label: 'Other',            emoji: '💰', color: '#64748b' },
+];
+const CAT_BY_ID = Object.fromEntries(CATS.map(c => [c.id, c]));
+
+// ─── Helpers ─────────────────────────────────────────────
+const fmt  = n  => new Intl.NumberFormat('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+const uid  = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const toYM = d  => d.toISOString().slice(0, 7);
+const toYMD= d  => d.toISOString().slice(0, 10);
+
+const monthLabel = ym => {
+  const [y, m] = ym.split('-');
+  return new Date(+y, +m - 1).toLocaleString('en', { month: 'long', year: 'numeric' });
+};
+const shiftMonth = (ym, n) => {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+const dayLabel = iso =>
+  new Date(iso + 'T12:00:00').toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
+
+// ─── Shared button styles ────────────────────────────────
+const S = {
+  navBtn: {
+    width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)',
+    background: 'var(--card)', color: 'var(--txt)', cursor: 'pointer', fontSize: 20,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  addBtn: {
+    padding: '8px 18px', borderRadius: 8, border: 'none',
+    background: '#dcf365', color: '#2c2c2e', cursor: 'pointer',
+    fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap', flexShrink: 0,
+  },
+  ghost: {
+    background: 'none', border: 'none', cursor: 'pointer', color: 'var(--txt3)',
+    fontSize: 18, lineHeight: 1, padding: '0 2px',
+  },
+};
+
+// ─── Auth Screen ─────────────────────────────────────────
+const AuthScreen = ({ onSignIn, loading }) => (
+  <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+    <div style={{ textAlign: 'center', padding: 40, maxWidth: 340 }}>
+      <div style={{ fontSize: 52, marginBottom: 12 }}>💰</div>
+      <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Simple Budget</h1>
+      <p style={{ color: 'var(--txt2)', marginBottom: 32, fontSize: 15 }}>Track your daily spending</p>
+      <button
+        onClick={onSignIn}
+        disabled={loading}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10, margin: '0 auto',
+          padding: '11px 22px', borderRadius: 10, border: '1px solid var(--border)',
+          background: 'var(--card)', color: 'var(--txt)', cursor: loading ? 'default' : 'pointer',
+          fontSize: 15, fontWeight: 500, opacity: loading ? 0.6 : 1,
+        }}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+        </svg>
+        {loading ? 'Signing in…' : 'Sign in with Google'}
+      </button>
+    </div>
+  </div>
+);
+
+// ─── Access Denied ───────────────────────────────────────
+const DeniedScreen = ({ user }) => (
+  <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+    <div style={{ textAlign: 'center', padding: 40 }}>
+      <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
+      <h2 style={{ marginBottom: 8 }}>Access Denied</h2>
+      <p style={{ color: 'var(--txt2)', marginBottom: 24 }}>
+        Signed in as <strong>{user?.email}</strong><br/>This app is private.
+      </p>
+      <button
+        onClick={() => auth.signOut()}
+        style={{ padding: '8px 20px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--txt)', cursor: 'pointer' }}
+      >
+        Sign out
+      </button>
+    </div>
+  </div>
+);
+
+// ─── Main App ────────────────────────────────────────────
+const BudgetApp = ({ user }) => {
+  const today = toYMD(new Date());
+  const [month,   setMonth]   = useState(toYM(new Date()));
+  const [days,    setDays]    = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving,  setSaving]  = useState(false);
+  const [form,    setForm]    = useState({ date: today, description: '', category: 'food', amount: '' });
+  const descRef = useRef();
+
+  // Real-time Firestore listener for the selected month
+  useEffect(() => {
+    setLoading(true);
+    const ref = db.collection('users').doc(user.uid).collection('months').doc(month);
+    const unsub = ref.onSnapshot(snap => {
+      setDays(snap.exists ? (snap.data().days || {}) : {});
+      setLoading(false);
+    }, err => { console.error(err); setLoading(false); });
+    return unsub;
+  }, [user.uid, month]);
+
+  const monthRef = useCallback(() =>
+    db.collection('users').doc(user.uid).collection('months').doc(month),
+  [user.uid, month]);
+
+  const addExpense = useCallback(async e => {
+    e.preventDefault();
+    const amt = parseFloat(form.amount);
+    if (!form.description.trim() || isNaN(amt) || amt <= 0) return;
+    setSaving(true);
+    try {
+      const existing = days[form.date] || [];
+      const entry = { id: uid(), description: form.description.trim(), category: form.category, amount: amt };
+      await monthRef().set({ days: { ...days, [form.date]: [...existing, entry] } }, { merge: true });
+      setForm(f => ({ ...f, description: '', amount: '' }));
+      descRef.current?.focus();
+    } finally { setSaving(false); }
+  }, [form, days, monthRef]);
+
+  const deleteExpense = useCallback(async (date, id) => {
+    const updated = (days[date] || []).filter(x => x.id !== id);
+    const newDays = { ...days };
+    if (updated.length === 0) delete newDays[date];
+    else newDays[date] = updated;
+    await monthRef().set({ days: newDays });
+  }, [days, monthRef]);
+
+  // Computed summary
+  const { byCat, total } = useMemo(() => {
+    const byCat = {};
+    let total = 0;
+    Object.values(days).flat().forEach(t => {
+      byCat[t.category] = (byCat[t.category] || 0) + t.amount;
+      total += t.amount;
+    });
+    return { byCat, total };
+  }, [days]);
+
+  const sortedDays = useMemo(() =>
+    Object.entries(days).sort(([a], [b]) => b.localeCompare(a)),
+  [days]);
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+
+      {/* ── Header ── */}
+      <div style={{ background: 'var(--card)', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 10 }}>
+        <div style={{ maxWidth: 640, margin: '0 auto', padding: '0 16px', height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>💰 Budget</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 26, height: 26, borderRadius: '50%' }} />}
+            <button onClick={() => auth.signOut()} style={{ ...S.ghost, fontSize: 13, color: 'var(--txt2)' }}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 640, margin: '0 auto', padding: '20px 16px 60px' }}>
+
+        {/* ── Month navigation ── */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <button onClick={() => setMonth(m => shiftMonth(m, -1))} style={S.navBtn}>‹</button>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 20 }}>{monthLabel(month)}</div>
+            {total > 0 && <div style={{ fontSize: 13, color: 'var(--txt2)' }}>€{fmt(total)} total</div>}
+          </div>
+          <button onClick={() => setMonth(m => shiftMonth(m, 1))} style={S.navBtn}>›</button>
+        </div>
+
+        {/* ── Add expense form ── */}
+        <form onSubmit={addExpense} style={{ background: 'var(--card)', borderRadius: 12, padding: 14, marginBottom: 20, border: '1px solid var(--border)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <input
+              type="date"
+              value={form.date}
+              onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+            />
+            <select
+              value={form.category}
+              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+            >
+              {CATS.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              ref={descRef}
+              placeholder="Description"
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              required
+            />
+            <input
+              type="number"
+              placeholder="€0.00"
+              step="0.01"
+              min="0.01"
+              value={form.amount}
+              onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+              style={{ width: 100 }}
+              required
+            />
+            <button type="submit" disabled={saving} style={{ ...S.addBtn, opacity: saving ? 0.6 : 1 }}>
+              {saving ? '…' : '+ Add'}
+            </button>
+          </div>
+        </form>
+
+        {/* ── Expense list ── */}
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: 48, color: 'var(--txt2)' }}>Loading…</div>
+        ) : sortedDays.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 48, color: 'var(--txt3)', fontSize: 15 }}>
+            No expenses yet.<br/>Add your first one above.
+          </div>
+        ) : (
+          sortedDays.map(([date, txns]) => (
+            <div key={date} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--txt2)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                {dayLabel(date)}
+                <span style={{ marginLeft: 8, color: 'var(--txt3)', fontWeight: 400 }}>
+                  €{fmt(txns.reduce((s, t) => s + t.amount, 0))}
+                </span>
+              </div>
+              <div style={{ background: 'var(--card)', borderRadius: 10, border: '1px solid var(--border)', overflow: 'hidden' }}>
+                {txns.map((t, i) => {
+                  const cat = CAT_BY_ID[t.category] || CATS[CATS.length - 1];
+                  return (
+                    <div key={t.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                      borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                    }}>
+                      <span style={{ fontSize: 20, flexShrink: 0, lineHeight: 1 }}>{cat.emoji}</span>
+                      <span style={{ flex: 1, fontSize: 14 }}>{t.description}</span>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: cat.color, flexShrink: 0 }}>
+                        €{fmt(t.amount)}
+                      </span>
+                      <button onClick={() => deleteExpense(date, t.id)} style={S.ghost} title="Delete">×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))
+        )}
+
+        {/* ── Monthly summary ── */}
+        {!loading && total > 0 && (
+          <div style={{ background: 'var(--card)', borderRadius: 12, padding: 16, border: '1px solid var(--border)', marginTop: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 14, fontSize: 15 }}>Monthly summary</div>
+            {CATS.filter(c => byCat[c.id]).sort((a, b) => byCat[b.id] - byCat[a.id]).map(c => (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 16, width: 22, flexShrink: 0 }}>{c.emoji}</span>
+                <span style={{ flex: 1, fontSize: 13, color: 'var(--txt2)' }}>{c.label}</span>
+                <div style={{ width: 90, height: 5, borderRadius: 3, background: 'var(--bg2)', overflow: 'hidden', flexShrink: 0 }}>
+                  <div style={{ height: '100%', width: `${Math.min(100, byCat[c.id] / total * 100)}%`, background: c.color, borderRadius: 3 }} />
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 600, width: 72, textAlign: 'right', flexShrink: 0 }}>
+                  €{fmt(byCat[c.id])}
+                </span>
+              </div>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 10, display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 600 }}>Total</span>
+              <span style={{ fontWeight: 700, fontSize: 16 }}>€{fmt(total)}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Root ────────────────────────────────────────────────
+const App = () => {
+  const [user,        setUser]        = useState(undefined); // undefined = still checking
+  const [authLoading, setAuthLoading] = useState(false);
+
+  useEffect(() => auth.onAuthStateChanged(u => setUser(u ?? null)), []);
+
+  const signIn = async () => {
+    setAuthLoading(true);
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await auth.signInWithPopup(provider);
+    } catch (e) {
+      if (e.code !== 'auth/popup-closed-by-user') console.error(e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // Still checking auth state
+  if (user === undefined) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+      <span style={{ color: 'var(--txt2)' }}>…</span>
+    </div>
+  );
+
+  if (!user) return <AuthScreen onSignIn={signIn} loading={authLoading} />;
+  if (user.email !== ALLOWED_EMAIL) return <DeniedScreen user={user} />;
+  return <BudgetApp user={user} />;
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
